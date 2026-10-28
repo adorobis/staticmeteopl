@@ -1,0 +1,3 @@
+get_meteo:
+  module: get_meteo
+  class: MeteoDownloader
