@@ -1,0 +1,8 @@
+URL=https://app.meteo.pl/meteogram/50.12,19.96
+FILENAME=meteogram_bibice.png
+CROP_LEFT=500
+CROP_TOP=117
+CROP_WIDTH=615
+CROP_HEIGHT=260
+REFRESH_INTERVAL=3600
+OUTPUT_DIR=/media
