@@ -1,2 +1,289 @@
-# staticmeteopl
-Python code to get static image (screenshot) of the new meteo.pl weather service. It is build to be run by appdaemon and store the output file in home assistant www folders for further use in dashboards.
+# Meteogram Screenshot for Home Assistant (AppDaemon)
+
+An [AppDaemon](https://appdaemon.readthedocs.io/) app that takes a screenshot of the dynamic meteogram on [app.meteo.pl](https://app.meteo.pl), crops it and saves it as a PNG for a Home Assistant dashboard.
+
+The site is a Flutter web app that can't be embedded or scraped directly, so the app drives headless Chrome with Selenium. It closes the overlays, takes a screenshot and keeps only the chart.
+
+## Features
+
+- **Headless Chrome screenshot**, cropped to a configurable box.
+- **Overlay handling**: closes the cookie consent popup and the "What's new" popup.
+- **Image validation**: a new image only replaces the previous one if it passes checks for size, blankness and number of colours. A failed run never leaves an empty image on the dashboard.
+- **24-hour image history**: every capture is kept, and rejected captures also keep a full-page screenshot, so you can find when and why rendering broke.
+- **Atomic writes**: the dashboard never loads a half-written file.
+- **Status entity in Home Assistant**: `binary_sensor.meteogram_problem`, with a `unique_id`, for automations and alerts.
+- **Manual refresh** from Home Assistant through an event, script or dashboard button.
+- **Safe operation**: overlapping runs are prevented, there is a page load timeout and the browser is always closed.
+- **Step-by-step logging** in the AppDaemon log, or on the console when run by hand.
+- **Plain text config file**, re-read on every run.
+
+## Requirements
+
+- AppDaemon 4.x connected to Home Assistant.
+- In the AppDaemon container:
+  - Chromium / Google Chrome
+  - `chromedriver` at `/usr/bin/chromedriver`, matching the Chrome version
+  - Python packages `selenium` (4.x) and `Pillow`
+- A folder the dashboard can read, `/media` by default.
+
+## Installation
+
+1. Copy `pobierz_meteo.py` to your AppDaemon apps folder, for example `/conf/apps/`.
+2. Register the app in `apps.yaml`:
+
+   ```yaml
+   pobierz_meteo:
+     module: pobierz_meteo
+     class: MeteoDownloader
+   ```
+
+3. Copy `meteo_config.txt` to `/conf/meteo_config.txt` and adjust it (see [Configuration](#configuration)).
+4. Add the status binary sensor to Home Assistant (see [Home Assistant integration](#home-assistant-integration)).
+5. Restart AppDaemon. The first download starts about 5 seconds after the app starts.
+
+## Configuration
+
+Settings are read from `/conf/meteo_config.txt` as `KEY=VALUE` lines. Blank lines and lines starting with `#` are ignored. Every key is optional: missing keys use their defaults, and invalid values are logged and replaced by the default.
+
+| Key | Default | Description |
+|---|---|---|
+| `URL` | `https://app.meteo.pl/meteogram/50.12,19.96` | Page to capture. |
+| `FILENAME` | `meteogram_bibice.png` | Output file name. |
+| `OUTPUT_DIR` | `/media` | Output folder. |
+| `CROP_LEFT` | `310` | Left edge of the crop box, in pixels. |
+| `CROP_TOP` | `140` | Top edge of the crop box. |
+| `CROP_WIDTH` | `403` | Crop box width. |
+| `CROP_HEIGHT` | `208` | Crop box height. |
+| `REFRESH_INTERVAL` | `900` | Seconds between runs. Read only when the app starts. |
+| `PAGE_LOAD_TIMEOUT` | `60` | Seconds to wait for the page to load. |
+| `HISTORY_DIR` | `meteo_history` | History folder, relative to `OUTPUT_DIR` unless absolute. |
+| `HISTORY_HOURS` | `24` | How long history files are kept. |
+| `MIN_FILE_SIZE` | `3000` | Minimum size of the cropped PNG, in bytes. |
+| `MIN_STDDEV` | `8` | Minimum grayscale standard deviation. A blank image is close to 0. |
+| `MIN_COLORS` | `16` | Minimum number of distinct colours. |
+| `STATUS_EVENT` | `meteogram_status` | Event fired after every run. |
+
+Example:
+
+```ini
+# --- Source and output ---
+URL=https://app.meteo.pl/meteogram/50.12,19.96
+FILENAME=meteogram_bibice.png
+OUTPUT_DIR=/media
+
+# --- Crop box (pixels in the 1400x1200 browser window) ---
+CROP_LEFT=500
+CROP_TOP=117
+CROP_WIDTH=615
+CROP_HEIGHT=260
+
+# --- Timing (seconds) ---
+REFRESH_INTERVAL=3600
+PAGE_LOAD_TIMEOUT=60
+
+# --- History ---
+HISTORY_DIR=meteo_history
+HISTORY_HOURS=24
+
+# --- Validation ---
+MIN_FILE_SIZE=3000
+MIN_STDDEV=8
+MIN_COLORS=16
+
+# --- Home Assistant status event ---
+STATUS_EVENT=meteogram_status
+```
+
+### Finding the crop box
+
+The browser window is 1400×1200, but the visible page area is a bit smaller (about 1400×1061) because the browser's own bars take up some height. To find the coordinates, look at a `*_REJECTED_full.png` from the history folder, or capture one full screenshot. The app rejects a crop box that doesn't fit inside the screenshot.
+
+## How it works
+
+Each run:
+
+1. Loads the config and logs the target, crop box and history folder.
+2. Starts headless Chrome (1400×1200, device scale factor 1) and opens the page.
+3. Clicks the cookie consent button, if there is one.
+4. Closes the "What's new" popup with a series of clicks on its background.
+5. Takes a screenshot, crops it and validates the crop.
+6. On success, saves the image to the history folder and replaces the dashboard image.
+   On failure, saves the rejected crop and the full screenshot to the history folder and keeps the previous image.
+7. Deletes history files older than `HISTORY_HOURS`.
+8. Fires the `meteogram_status` event with the result.
+
+### Image validation
+
+A capture is rejected if any of these is true:
+
+- Its dimensions don't match `CROP_WIDTH` × `CROP_HEIGHT`, or the crop box goes outside the screenshot.
+- The PNG is smaller than `MIN_FILE_SIZE`.
+- Its grayscale standard deviation is below `MIN_STDDEV`, meaning it is blank or flat.
+- It has fewer than `MIN_COLORS` distinct colours.
+
+These checks catch blank and broken renders. They can't detect a valid-looking image of the wrong thing, such as a new popup covering the chart. That's what the history folder is for.
+
+### History
+
+```
+/media/meteo_history/
+├── meteogram_bibice_20261030_174246.png               # accepted capture
+├── meteogram_bibice_20261030_184250_REJECTED.png      # rejected crop
+└── meteogram_bibice_20261030_184250_REJECTED_full.png # full page of the rejected run
+```
+
+If the dashboard image starts looking wrong, find the first bad file in the history folder to see when the problem began. The `_REJECTED_full.png` files show what the browser actually rendered.
+
+## Home Assistant integration
+
+### Status binary sensor
+
+Entities created by AppDaemon can't have a `unique_id`. Instead, the app fires an event after every run, and Home Assistant builds the entity from it with a trigger-based template binary sensor. Home Assistant restores its state after a restart, and you can customise it in the UI.
+
+Add this to `configuration.yaml`, merging it with an existing `template:` section if you have one, or use it as a package:
+
+```yaml
+template:
+  - triggers:
+      - trigger: event
+        event_type: meteogram_status
+    binary_sensor:
+      - name: "Meteogram problem"
+        unique_id: meteogram_problem
+        device_class: problem
+        icon: mdi:weather-partly-cloudy
+        state: "{{ not trigger.event.data.success }}"
+        attributes:
+          message: "{{ trigger.event.data.message }}"
+          last_attempt: "{{ trigger.event.data.last_attempt }}"
+          last_success: >-
+            {{ trigger.event.data.last_attempt if trigger.event.data.success
+               else this.attributes.get('last_success') }}
+          consecutive_failures: >-
+            {{ 0 if trigger.event.data.success
+               else (this.attributes.get('consecutive_failures', 0) | int(0)) + 1 }}
+```
+
+> On Home Assistant versions older than 2024.10, write `trigger:` and `- platform: event` instead.
+
+| State / attribute | Meaning |
+|---|---|
+| `on` | The last run failed. |
+| `off` | The last run succeeded. |
+| `message` | Validation result or error message. |
+| `last_attempt` | Time of the last run. |
+| `last_success` | Time of the last successful run. |
+| `consecutive_failures` | Failed runs in a row. Counted in Home Assistant, so restarting AppDaemon doesn't reset it. |
+
+The sensor shows `unknown` until the first event arrives.
+
+Example automation:
+
+```yaml
+automation:
+  - alias: "Meteogram keeps failing"
+    triggers:
+      - trigger: numeric_state
+        entity_id: binary_sensor.meteogram_problem
+        attribute: consecutive_failures
+        above: 2
+    actions:
+      - action: notify.notify
+        data:
+          message: >-
+            Meteogram failed {{ state_attr('binary_sensor.meteogram_problem', 'consecutive_failures') }}
+            times: {{ state_attr('binary_sensor.meteogram_problem', 'message') }}
+```
+
+### Manual refresh
+
+The app listens for the `METEOGRAM_REFRESH` event.
+
+Script:
+
+```yaml
+script:
+  meteogram_refresh:
+    alias: "Refresh meteogram"
+    icon: mdi:refresh
+    sequence:
+      - event: METEOGRAM_REFRESH
+```
+
+Dashboard button:
+
+```yaml
+type: button
+name: Refresh meteogram
+icon: mdi:refresh
+tap_action:
+  action: perform-action
+  perform_action: script.meteogram_refresh
+```
+
+A run takes about 30 seconds. A refresh requested while a run is in progress is skipped, and the log shows a warning.
+
+You can also fire the event from **Developer Tools → Events**, or through the REST API:
+
+```bash
+curl -X POST -H "Authorization: Bearer YOUR_TOKEN" http://HA_HOST:8123/api/events/METEOGRAM_REFRESH
+```
+
+## Logging
+
+Every step is logged to the AppDaemon log:
+
+```
+INFO pobierz_meteo: === Meteogram run 20261030_174246 started ===
+INFO pobierz_meteo: [STEP 1] Config: /conf/meteo_config.txt (found)
+INFO pobierz_meteo: [STEP 2] Webpage loaded successfully. Title: 'Meteo ICM'
+INFO pobierz_meteo: [STEP 4] Offset (100,20): clicked.
+INFO pobierz_meteo: [STEP 5] Screenshot captured: 1400x1061, 422687 B
+INFO pobierz_meteo: [STEP 5] Validation passed: 82259 B, stddev 61.5
+INFO pobierz_meteo: [STEP 6] History file saved: /media/meteo_history/meteogram_bibice_20261030_174246.png
+INFO pobierz_meteo: [DASHBOARD SUCCESS] Tailored 615x260 image created at: /media/meteogram_bibice.png
+INFO pobierz_meteo: [HISTORY] Pruned 0 file(s) older than 24h, 7 file(s) kept.
+INFO pobierz_meteo: [STATUS] Event 'meteogram_status' fired: success=True, message='82259 B, stddev 61.5'
+INFO pobierz_meteo: === Meteogram run 20261030_174246 finished in 31.0s ===
+```
+
+## Testing from the command line
+
+You can run the screenshot step without AppDaemon's scheduler. Output goes to the console. This doesn't fire the status event.
+
+```bash
+docker exec -it appdaemon python3 -c "import sys; sys.path.append('/conf/apps'); import pobierz_meteo; pobierz_meteo.fetch_meteogram(print)"
+```
+
+To run the full app, including the status event, reload it inside AppDaemon:
+
+```bash
+docker exec appdaemon touch /conf/apps/pobierz_meteo.py
+```
+
+## Troubleshooting
+
+| Symptom | What to check |
+|---|---|
+| No `=== Meteogram run ... started ===` after the app starts | Make sure the app is registered in `apps.yaml` and the latest file is in `/conf/apps/`. |
+| `session not created: This version of ChromeDriver only supports Chrome version X` | Install a `chromedriver` that matches the installed Chrome. |
+| `crop box exceeds screenshot size` | Make the crop box smaller. The visible page area is about 1400×1061. |
+| `image looks blank` / `too few distinct colours` | Look at the `_REJECTED_full.png` in the history folder: the page probably didn't render or a popup covers the chart. |
+| Valid images rejected | Lower `MIN_FILE_SIZE`, `MIN_STDDEV` or `MIN_COLORS`. |
+| `Page navigated to ... a click probably hit a link` | The overlay clicks landed on a page element. Check whether the site layout changed. |
+| Status sensor stays `unknown` | Check for the `[STATUS] Event ... fired` log line, and listen to `meteogram_status` in Developer Tools → Events. |
+| Dashboard shows an old image | The browser caches the image. Reload the dashboard. |
+
+## Repository layout
+
+```
+.
+├── pobierz_meteo.py        # AppDaemon app
+├── meteo_config.txt        # example configuration
+├── meteogram_status.yaml   # Home Assistant template binary_sensor
+└── README.md
+```
+
+## Disclaimer
+
+This project isn't affiliated with ICM / meteo.pl. Forecast data and images belong to their owners, so check the site's terms of use before publishing captured images. The overlay handling depends on the site's current layout and may need adjusting if the site changes.
