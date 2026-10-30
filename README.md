@@ -19,15 +19,68 @@ The site is a Flutter web app that can't be embedded or scraped directly, so the
 
 ## Requirements
 
-- AppDaemon 4.x connected to Home Assistant.
-- In the AppDaemon container:
-  - Chromium / Google Chrome
-  - `chromedriver` at `/usr/bin/chromedriver`, matching the Chrome version
-  - Python packages `selenium` (4.x) and `Pillow`
-- A folder the dashboard can read, `/media` by default.
+| Component | Type | Purpose |
+|---|---|---|
+| AppDaemon 4.x | | Runs the app and connects it to Home Assistant. |
+| `chromium` | System package | Headless browser that renders the page. |
+| `chromium-chromedriver` | System package | Lets Selenium control Chromium. Installs `/usr/bin/chromedriver`. |
+| `selenium==4.18.1` | Python package | Browser automation. |
+| `Pillow==10.2.0` | Python package | Cropping and validating the image. |
+
+You also need a folder the dashboard can read, `/media` by default.
+
+Install `chromium` and `chromium-chromedriver` from the same package repository so their versions match. A mismatch causes a `session not created` error.
+
+### Where to configure the packages
+
+How you add the packages depends on how you run AppDaemon. Restart AppDaemon after changing them, because packages are installed at startup.
+
+#### AppDaemon Docker container (`acrelle/appdaemon`)
+
+The official image is based on Alpine. At startup it searches the config folder (mounted as `/conf`) and all its subfolders for these two files and installs what they list. No environment variable is needed. Because the search includes subfolders, cloning this repository into `/conf/apps/` is enough: its `system_packages.txt` and `requirements.txt` are picked up automatically.
+
+If you use a different image, check its documentation. Some community images only install extra packages when an environment variable is set.
+
+The two files look like this:
+
+`/conf/system_packages.txt`, installed with `apk`:
+
+```text
+chromium
+chromium-chromedriver
+```
+
+`/conf/requirements.txt`, installed with `pip`:
+
+```text
+selenium==4.18.1
+Pillow==10.2.0
+```
+
+#### Home Assistant AppDaemon add-on
+
+Set the packages in the add-on's **Configuration** tab (Settings → Add-ons → AppDaemon → Configuration):
+
+```yaml
+system_packages:
+  - chromium
+  - chromium-chromedriver
+python_packages:
+  - selenium==4.18.1
+  - Pillow==10.2.0
+```
+
+#### Check the installation
+
+```bash
+docker exec appdaemon sh -c "chromium --version; chromedriver --version; python3 -c 'import selenium, PIL; print(selenium.__version__, PIL.__version__)'"
+```
+
+The Chromium and ChromeDriver major versions must be the same. On some installations the browser command is `chromium-browser`.
 
 ## Installation
 
+1. Install the required packages (see [Where to configure the packages](#where-to-configure-the-packages)).
 1. Copy `pobierz_meteo.py` to your AppDaemon apps folder, for example `/conf/apps/`.
 2. Register the app in `apps.yaml`:
 
@@ -199,15 +252,23 @@ automation:
 
 The app listens for the `METEOGRAM_REFRESH` event.
 
-Script:
+Script in `scripts.yaml`:
 
 ```yaml
-script:
-  meteogram_refresh:
-    alias: "Refresh meteogram"
-    icon: mdi:refresh
-    sequence:
-      - event: METEOGRAM_REFRESH
+meteogram_refresh:
+  alias: "Refresh meteogram"
+  icon: mdi:refresh
+  sequence:
+    - event: METEOGRAM_REFRESH
+```
+
+If you create the script in the UI (Settings → Automations & Scenes → Scripts → Add → Edit in YAML), leave out the `meteogram_refresh:` line, otherwise you get `Message malformed: not a valid option`. Set its entity ID to `script.meteogram_refresh` when saving, or change the button below to match.
+
+```yaml
+alias: Refresh meteogram
+icon: mdi:refresh
+sequence:
+  - event: METEOGRAM_REFRESH
 ```
 
 Dashboard button:
@@ -266,7 +327,9 @@ docker exec appdaemon touch /conf/apps/pobierz_meteo.py
 | Symptom | What to check |
 |---|---|
 | No `=== Meteogram run ... started ===` after the app starts | Make sure the app is registered in `apps.yaml` and the latest file is in `/conf/apps/`. |
-| `session not created: This version of ChromeDriver only supports Chrome version X` | Install a `chromedriver` that matches the installed Chrome. |
+| `session not created: This version of ChromeDriver only supports Chrome version X` | Install `chromium` and `chromium-chromedriver` from the same repository so the versions match. |
+| `ModuleNotFoundError: No module named 'selenium'` (or `PIL`) | Add the Python packages (see [Requirements](#requirements)) and restart AppDaemon. |
+| `Message malformed: not a valid option` when saving the script | In the UI script editor, leave out the top `meteogram_refresh:` line. |
 | `crop box exceeds screenshot size` | Make the crop box smaller. The visible page area is about 1400×1061. |
 | `image looks blank` / `too few distinct colours` | Look at the `_REJECTED_full.png` in the history folder: the page probably didn't render or a popup covers the chart. |
 | Valid images rejected | Lower `MIN_FILE_SIZE`, `MIN_STDDEV` or `MIN_COLORS`. |
@@ -281,6 +344,8 @@ docker exec appdaemon touch /conf/apps/pobierz_meteo.py
 ├── pobierz_meteo.py        # AppDaemon app
 ├── meteo_config.txt        # example configuration
 ├── meteogram_status.yaml   # Home Assistant template binary_sensor
+├── requirements.txt        # Python packages
+├── system_packages.txt     # Alpine packages (Docker image)
 └── README.md
 ```
 
