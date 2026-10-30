@@ -1,8 +1,30 @@
+# --- Source and output ---
 URL=https://app.meteo.pl/meteogram/50.12,19.96
 FILENAME=meteogram_bibice.png
+OUTPUT_DIR=/media
+
+# --- Crop box (pixels in the 1400x1200 screenshot) ---
 CROP_LEFT=500
 CROP_TOP=117
 CROP_WIDTH=615
 CROP_HEIGHT=260
+
+# --- Timing (seconds) ---
+# REFRESH_INTERVAL is only read when the app starts
 REFRESH_INTERVAL=3600
-OUTPUT_DIR=/media
+PAGE_LOAD_TIMEOUT=60
+
+# --- History of captured images (relative to OUTPUT_DIR unless absolute) ---
+HISTORY_DIR=meteo_history
+HISTORY_HOURS=24
+
+# --- Validation: an image failing any check never replaces the previous one ---
+# Minimum PNG size in bytes
+MIN_FILE_SIZE=3000
+# Minimum grayscale standard deviation (a blank image is close to 0)
+MIN_STDDEV=8
+# Minimum number of distinct colours
+MIN_COLORS=16
+
+# --- Home Assistant status event (feeds the template binary_sensor) ---
+STATUS_EVENT=meteogram_status
